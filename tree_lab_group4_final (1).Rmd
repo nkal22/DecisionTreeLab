@@ -1,0 +1,465 @@
+---
+title: "Decision Tree Evaluation - Tumor Classification"
+author: "Aatmika Deshpande, Nick Kalinowski, Alden Summerville"
+date: "11/18/2020"
+output:
+  html_document:
+    toc: TRUE
+    theme: spacelab
+    toc_float: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, warning = FALSE, error = FALSE, message = FALSE)
+
+library(rio)
+library(plyr)
+library(tidyverse)
+library(rpart)
+library(psych)
+library(pROC)
+#install.packages("rpart.plot")
+library(rpart.plot)
+#install.packages("rattle")
+library(rattle)
+library(caret)
+setwd("/cloud/project/decision_trees")
+
+```
+
+## **Objective**
+
+Congrats! You just graduated from medical school and got a PhD in Data Science at the same time, wow impressive. Because of these incredible accomplishments the world now believes you will be able to cure cancer...no pressure. To start you figured you better create some way to detect cancer when present. Luckily because you are now a MD and DS PhD or MDSDPhD, you have access to data sets and know your way around a ML classifier. So, on the way to fulfilling your destiny to rig the world of cancer you start by building several classifiers that can be used to aid in determining if patients have cancer and the type of tumor. 
+
+The included dataset (clinical_data_breast_cancer_modified.csv) has information on 105 patients across 20 variables, your goal is to build two classifiers one for PR.Status (progesterone receptor), a biomarker that routinely leads to a cancer diagnosis, indicating if there was a positive or negative outcome and one for the Tumor multi-class variable . You would like to be able to explain the model to the mere mortals around you but need a fairly robust and flexible approach so you've chosen to use decision trees to get started and will possibly move to a ensemble model if needed. 
+
+In doing so, similar to  great data scientists working at very average marketing firms, you remembered the excellent education provided to you at UVA in a undergrad data science course and have outline 20ish steps that will need to be undertaken to complete this task (you can add more or combine if needed).Good luck and the world thanks you. 
+
+## **Cancer Diagnosis Analysis**
+
+In this model, our goals include predicting whether a patient has cancer, and what type of tumor they may be carrying. I believe that the gini decision tree model should be used to determine the most important and relevant factors to predict future diagnoses and provide the best possible care to our patients. 
+
+First, we will attempt to determine a model to best predict a cancer diagnosis.
+
+### Building the Model
+
+```{r, include=FALSE}
+tree_1 <- tibble(import("clinical_breast_cleaned.csv", check.names= TRUE))
+#loading in the dataset as a tibble
+
+tree_1 <- tree_1 %>% select (-c(ER.Status)) #removing the duplicate "ER.Status" column
+
+
+
+
+#describe(tree_1)
+#View(tree_1)
+#str(tree_1)
+```
+
+After ensuring that the data is clean and usable, we will look at the base rate for the classifier:
+```{r, echo=FALSE}
+sum(tree_1$PR.Status) #adding up the column values to get a total. PR.Status consists of only zeroes (negative diagnoses), and ones (positive diagnoses)
+length(tree_1$PR.Status)#total number of patients
+
+(x <- 1- sum(tree_1$PR.Status)/length(tree_1$PR.Status))#obtains base rate. Should be around 49%
+
+```
+
+This means that at random, we have an 49% chance of correctly diagnosing a cancer-stricken individual.
+
+Now, we will begin setting up our tree model, looking specifically at the reduction in error brought up by each variable. We will do this by looking at the variable.importance function, which will output this value for each column in the dataset relative to a cancer diagnosis.
+
+```{r, echo=FALSE}
+tree_1_long = tree_1 %>% gather(Var, #<- list of predictor variables
+                                Value,#<- the values of those predictor variables
+                                -PR.Status)  #<- the column to gather the data by
+
+#View(tree_1_long)
+
+tree_1_long_form = ddply(tree_1_long, 
+                            .(Var, Value),#<- group by Var and Value, "." allows us to call the variables without quoting
+                            summarize,  
+                            prob_cancer = mean(PR.Status), #<- probability of having cancer
+                            prob_not_cancer = 1 - mean(PR.Status)) #<- probability of not having cancer
+
+#View(tree_1_long_form)
+
+#tree_1 = lapply(tree_1, function(x) as.factor(x))
+
+#str(tree_1)
+
+tree_1 <- as_tibble(tree_1)
+
+#tree_1
+
+tree_1$PR.Status <- factor(tree_1$PR.Status,labels = c("not_canc", "canc"))
+
+#set.seed(1980)
+tree_1_tree_gini = rpart(PR.Status~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = tree_1,#<- data used
+                            control = rpart.control(cp=.001))
+
+#Look at the results
+tree_1_tree_gini$variable.importance
+```
+In addition, another important metric to consider is the true values of cancerous and non-cancerous patients in our hospitals. We will do this by producing a table consisting of the number of rows containing "0" (non-cancerous), and "1" (cancerous). These will be represented by "not_canc" and "canc", respectively.
+```{r,echo=FALSE}
+table(tree_1$PR.Status)
+```
+Now that we see the variable importance metrics and know the true values of cancerous/non-cancerous individuals in our system, let's look at the tree itself, first in its dataframe form, and then as a neater graph.
+```{r,include=FALSE}
+tree_1_tree_gini$frame
+
+```
+
+After confirming that our tree has a significant number of splits (looks to be about 4 in this case), we can present a pictoral representation of the tree, with probabilities for each split.
+
+### The Tree Model: Cancer Diagnosis
+
+
+```{r, echo=FALSE}
+rpart.plot(tree_1_tree_gini, type =4, extra = 101) #plot of tree
+```
+
+Our model here is divided into four splits. The first split occurs utilizing the "Days to Date of Last Contact" variable. If this variable is less than 12, the model will output a non-cancer diagnosis, and vice versa. The second split occurs with the "Converted Stage" variable. If the converted stage is none, Stage I, or Stage IIA, we will progress to the next split. However, if the converted stage is Stage IIB, Stage IIIA, or Stage IIIC, the model will immediately output a positive diagnosis. At the third split, the model divides using the Age at Initial Pathologic Diagnois variable. If the patient is less than 63 years old, the model then considers the AJCC.Stage variable to make a diagnosis. However, if the patient is 63 years old or above, the model proceeds to the Survival.Data.Form variable to make a diagnosis. This fourth split is the only one which is dependent in both directions of the preceeding variable, as the age of the patient has a direct impact on which variable it chooses to analyze next. All the squares in blue are a non-cancer diagnosis (or leaning non-cancer), while the squares in green represent a positive diagnosis (or leaning positive). 
+
+
+But is this truly the best model? The "cptable" function should provide us with the answer. It calculates the optimal number of splits needed to produce a significant result. Let's calculate it and find the results.
+
+```{r, echo=FALSE}
+
+#View(tree_1_tree_gini$cptable)
+
+cptable_1 <- as_tibble(tree_1_tree_gini$cptable, ) #puts the table in tibble format, for optimal viewing
+#str(cptable_1)
+
+cptable_1$opt <- cptable_1$`rel error`+ cptable_1$xstd #calculates optimal number of splits
+
+#cptable_1
+
+plotcp(tree_1_tree_gini) #graphical representation of cp table
+
+```
+
+### Analysis of CP Table
+
+After analyzing the CP Table, we can see that the minimum number of splits needed to produce a significant outcome considering error is 1.
+
+
+Now, we can use the predict() function to attempt to, well, predict the target variable (whether or not a patient has cancer). The function will run our decision tree algorithm on each patient and output a diagnosis of "canc" (has cancer), or "not_canc" (does not have cancer). The code for this is shown below:
+```{r, eval=FALSE}
+
+tree_1_fitted_model = predict(tree_1_tree_gini, type= "class") #prediction function, using the "class" type to divide our results into positive and negative diagnoses
+
+#as.data.frame(tree_1_fitted_model)
+
+```
+
+```{r, include=FALSE}
+
+tree_1_fitted_model = predict(tree_1_tree_gini, type= "class") #prediction function, using the "class" type to divide our results into positive and negative diagnoses
+
+#as.data.frame(tree_1_fitted_model)
+
+canc_conf_matrix = table(tree_1_fitted_model, tree_1$PR.Status)
+canc_conf_matrix
+
+```
+
+But how accurate was the model on our dataset? We can determine this by using a confusion matrix, which is a tool that outputs a 2x2 matrix dividing the total number of positives into true (correct prediction) and false (predicted positive, patient was actually negative), and the same for the total number of negatives. If our model is to be trusted, it must have a significantly higher result than our baseline, which as you recall was 49%.
+
+```{r, echo=FALSE}
+
+#table(tree_1_fitted_model)
+
+confusionMatrix(as.factor(tree_1_fitted_model), as.factor(tree_1$PR.Status), positive = "canc", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+
+
+
+```
+
+### Analysis of Confusion Matrix
+
+Overall, the diagnostics produced by the confusion matrix look much better than the baseline rate. 
+
+**Accuracy** = 74.29%
+
+**Sensitivity (true positive rate)** = 68.52%
+
+**False positive rate** = 21.27%
+
+**F1 Score** = 0.7326
+
+**Kappa** = 0.4892
+
+**Detection Rate** = 0.3524
+
+
+From the confusion matrix above, the accuracy of our model is 74.29%. This is not great for the accuracy statistic, however it may give a biased representation to correctly classifying positive cases or negative cases, as it takes both into account. To dig deeper, we’ll look at the true positive rate (or sensitivity) and false positive rate (1-specificity).
+
+The sensitivity is 68.52% which is somewhat decent. On the other hand, the false positive rate is 21.27% which is pretty poor. Those metrics basically tell us the model is fairly accurate at correctly classifying a patient who has cancer, and is not great at classifying when a patient is cancer-free, either. Therefore, applying this model in real-life might not be a good idea if the bank wants to diagnose patients.
+
+The F1 score (a measure of accuracy that is the harmonic mean of precision and recall) is 0.733 which is decent. The F1 score takes into account the precision predicting positive outcomes, and the proportion of actual positive correct outcomes, therefore, because the F1 is mediocre (but not downright terrible) we have more confirmation that our model is deficient at classifying positive outcomes (a cancerous patient).
+
+Another metric, Kappa, which is indicates how much better our classifier is performing over the performance of a classifier that would just guess at random, is equal to 0.4892. That is also pretty average, indicating our model is a little bit better than simply guessing at random (for classiying positive cases).
+
+```{r, include=FALSE}
+table(tree_1$PR.Status)
+```
+
+We will attempt to further our analysis through finding our true error rate by calculating the "hit rate," or false positive rate. This number displays the percentage of datapoints that resulted in a positive diagnosis, when the patient was actually negative. A low hit rate would be preferred here.
+
+In addition, we also calculate the "Detection Rate" - or overall percentage of the total data points that were correctly predicted as positive. (In other words, this is the top left value in the confusion matrix divided by the total number of patients).
+
+
+```{r, echo = FALSE}
+
+#sum(canc_conf_matrix[row(canc_conf_matrix)!= col(canc_conf_matrix)]) #27
+#sum(canc_conf_matrix)
+
+canc_error_rate = sum(canc_conf_matrix[row(canc_conf_matrix) != col(canc_conf_matrix)]) / sum(canc_conf_matrix) #Calculation of hit rate error value. 
+
+paste0("Hit Rate/True Error Rate: ", canc_error_rate * 100, "%")
+#25.71%
+
+canc_conf_matrix[2,2]/sum(canc_conf_matrix) #35.24%
+
+```
+
+As we can see, the hit rate results in a pretty disappointing 25.71% value, indicating a pretty high percentage of false positives. However, when we consider that the base rate was 49%, we can observe that our model did improve the diagnosis accuracy rate slightly as compared to the baseline accuracy. Thus we can confirm that our model is probably better than random chance at predicting cancer onset, but not good enough to be put into practice.
+
+```{r, echo=FALSE}
+
+canc_roc <- roc(tree_1$PR.Status, as.numeric(tree_1_fitted_model), plot = TRUE)
+
+
+tree_1_fitted_prob = predict(tree_1_tree_gini, type= "prob")
+#tree_1_fitted_prob
+
+#roc(tree_1$PR.Status, ifelse(tree_1_fitted_prob[,'not_canc'] >= .75,0,1), plot=TRUE)
+
+```
+
+
+Another useful metric uses an ROC (receiver operating curve) which plots the sensitivity versus specificity at varying cutoff thresholds (the probabilistic threshold the model uses to classify a case as positive). An AUC (area under curve) value is calculated based on the ROC, and the value for this model is 0.7309 which is a fair rating as we want the value to be >0.8.
+
+## **Tumor Type Analysis**
+
+Now, we will attempt to use a similar methodology to diagnose specific tumors in patients. There are four types of tumors, labeled T1, T2, T3, and T4, and we want to see what factors influence the onset of certain tumors, and hopefully predict the type of cancer for future patients.
+
+```{r, include=FALSE}
+tree_2 <- tibble(import("clinical_breast_cleaned.csv", check.names= TRUE))
+#loading in the dataset as a tibble
+
+tree_2 <- tree_2 %>% select (-c(ER.Status)) #removing the duplicate "ER.Status" column
+
+
+
+
+#describe(tree_1)
+#View(tree_1)
+#str(tree_1)
+```
+
+After ensuring that the data is clean and usable, we will look at the base rate for the classifier:
+```{r, echo=FALSE}
+
+tree_2$Tumor <- as.factor(tree_2$Tumor)
+
+tree_2$Tumor <- as.numeric(tree_2$Tumor)
+
+#tree_2$Tumor
+
+
+#describe(tree_2)
+#View(tree_2)
+#str(tree_2)
+
+#sum(tree_2$Tumor)
+#length(tree_2$Tumor)
+
+(x <- sum(tree_2$Tumor==2)/length(tree_2$Tumor))
+
+```
+
+This means that at random, we have an 61% chance of correctly diagnosing a cancer-stricken individual with Tumor 2.
+
+Now, we will begin setting up our tree model, looking specifically at the reduction in error brought up by each variable. We will do this by looking at the variable.importance function, which will output this value for each column in the dataset relative to a cancer diagnosis.
+
+```{r, echo=FALSE}
+tree_2_long = tree_2 %>% gather(Var, #<- list of predictor variables
+                                Value,#<- the values of those predictor variables
+                                -Tumor)  #<- the column to gather the data by
+
+#View(tree_2_long)
+
+#tree_1 = lapply(tree_1, function(x) as.factor(x))
+
+#str(tree_2)
+
+tree_2 <- as_tibble(tree_2)
+
+#table(tree_2$Tumor)
+
+#tree_2
+
+tree_2$Tumor <- factor(tree_2$Tumor,labels = c("T1", "T2", "T3", "T4"))
+
+#set.seed(1980)
+tree_2_tree_gini = rpart(Tumor~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = tree_2,#<- data used
+                            control = rpart.control(cp=.001))
+
+#Look at the results
+tree_2_tree_gini$variable.importance
+```
+In addition, another important metric to consider is the true values of cancerous and non-cancerous patients in our hospitals. We will do this by producing a table consisting of the number of rows containing each tumor. These will be represented by "T1", "T2, "T3, and "T4", respectively.
+```{r,echo=FALSE}
+table(tree_2$Tumor)
+```
+Now that we see the variable importance metrics and know the true values of cancerous/non-cancerous individuals in our system, let's look at the tree itself, first in its dataframe form, and then as a neater graph.
+```{r,include=FALSE}
+tree_1_tree_gini$frame
+
+```
+
+After confirming that our tree has a significant number of splits (looks to be about 4 again in this case), we can present a pictoral representation of the tree, with probabilities for each split.
+
+### The Tree Model: Tumor Diagnosis
+
+
+```{r, echo=FALSE}
+rpart.plot(tree_2_tree_gini, type =4, extra = 101) #plot of tree
+```
+
+Our model here is divided into four splits. The first split occurs utilizing the "AJCC.Status" variable. If this variable is equal to Stage I, Stage IA, or Stage IIIB, the model will output a Tumor 1 diagnosis, but if otherwise, will move on to the next stage. The second split occurs again with the "AJCC.Status" variable. If the variable value is Stage IB, Stage II, Stage IIA, or Stage III, the model will immediately output a Tumor II diagnosis, otherwise we move on to the third split. At the third split, the model divides using the Node.Coded variable. If the patient is positive in this area, the model then considers the AJCC.Stage variable again to make a diagnosis. However, if the patient is negative, the model outputs a Tumor 3 diagnosis. The AJCC.Stage variable is again used to filter patients, as  Stage IIB now results in a Tumor 2 diagnosis, while all others proceed to the final split, which is determined by Days to Date of Last Contact. If this variable is less than or equal to 474, the model returns a T3 diagnosis, and returns a T2 diagnosis otherwise.
+
+One notable observation is the exclusion of the T4 variable, which has too few data points (6 in total) for the model to make an accurate prediction regarding the onset of this specific tumor.
+
+
+But is this truly the best model? The "cptable" function should provide us with the answer. It calculates the optimal number of splits needed to produce a significant result. Let's calculate it and find the results.
+
+```{r, echo=FALSE}
+
+#View(tree_1_tree_gini$cptable)
+
+cptable_2 <- as_tibble(tree_2_tree_gini$cptable, ) #puts the table in tibble format, for optimal viewing
+#str(cptable_1)
+
+cptable_2$opt <- cptable_2$`rel error`+ cptable_2$xstd #calculates optimal number of splits
+
+#cptable_1
+
+plotcp(tree_2_tree_gini) #graphical representation of cp table
+
+```
+
+### Analysis of CP Table
+
+After analyzing the CP Table, we can see that the minimum number of splits needed to produce a significant outcome considering error is 3.
+
+Now, we can use the predict() function to attempt to, well, predict the target variable (whether or not a patient has cancer). The function will run our decision tree algorithm on each patient and output a diagnosis of each of the three main tumors. The code for this is shown below:
+```{r, eval=FALSE}
+
+tree_2_fitted_model = predict(tree_2_tree_gini, type= "class") #prediction function, using the "class" type to divide our results into positive and negative diagnoses
+
+#as.data.frame(tree_1_fitted_model)
+
+```
+
+```{r, include=FALSE}
+
+tree_2_fitted_model = predict(tree_2_tree_gini, type= "class") #prediction function, using the "class" type to divide our results into positive and negative diagnoses
+
+#as.data.frame(tree_1_fitted_model)
+
+canc_conf_matrix2 = table(tree_2_fitted_model, tree_2$Tumor)
+canc_conf_matrix2
+
+```
+
+But how accurate was the model on our dataset? We can determine this by using a confusion matrix, which is a tool that outputs a 4x4 matrix dividing the total number of T1 into true (correct prediction) and false (predicted T1, patient was T2/T3), and the same for the total number of T2, T3, and T4 patients. If our model is to be trusted, it must have a significantly higher result than our baseline, which as you recall was 61% for the most common tumor, T2.
+
+```{r, echo=FALSE}
+
+#table(tree_1_fitted_model)
+
+confusionMatrix(as.factor(tree_2_fitted_model), as.factor(tree_2$Tumor), positive = "canc", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+
+
+
+```
+
+### Analysis of Confusion Matrix
+
+Overall, the diagnostics produced by the confusion matrix look much better than the baseline rate. 
+
+**Accuracy** = 83.81%
+
+**Sensitivity (true positive rate)** = 66.67% for T1, 95.38% for T2, 84.21% for T3, and 0% for T4 
+
+**False positive rate** = 37.5% for T1, 10% for T2, 20% for T3
+
+**F1 Score** = 0.6451 for T1, 0.9253 for T2, 0.8205 for T3, 0% for T4
+
+**Kappa** = 0.6985
+
+**Detection Rate** = 0.0952 for T1, 0.5905 for T2, 0.1524 for T3, 0 for T4
+
+
+From the confusion matrix above, the accuracy of our model is 83.81%. This is fairly good for the accuracy statistic, however the model is clearly better at predicting certain types of tumors over others. 
+
+The sensitivity is 66.67% for T1 which is somewhat decent, but is significantly better for T2 (95.38%) and T3 (84.21%), especially once we recall that the base rate for predicting T2 that we calculated at the beginning was 61%. On the other hand, the false positive rates still tend to be on the high side, especially for T1, with 37.5%, which is pretty poor. However, all of the false positives for T1 came from the T4 patients, which the model did not consider. If the model diagnoses a patient as having T1, then it is almost certain that they either have T1 or T4, and further testing can be implemented focusing on just these two types. Thus, this model is overall fairly accurate at predicting between the four types of tumors, but let's look at further diagnostics.
+
+The F1 score (a measure of accuracy that is the harmonic mean of precision and recall) is 0.645 for T1 which is decent, but again probably thrown off by the T4 values. F1 is also strong for the T2 with a 0.9253 value, and above average for T3 with a 0.8205 value. The F1 score takes into account the precision predicting positive outcomes, and the proportion of actual positive correct outcomes, therefore, because the F1 is generally strong (except in the aforementioned T1) we have more confirmation that our model is promising at classifying certain outcomes (especially T2).
+
+Another metric, Kappa, which is indicates how much better our classifier is performing over the performance of a classifier that would just guess at random, is equal to 0.6985. That is also above average, indicating our model is  probably better than simply guessing at random (for classiying tumors).
+
+```{r, include=FALSE}
+table(tree_2$PR.Status)
+```
+
+We will attempt to further our analysis through finding our true error rate by calculating the "hit rate," or false positive rate. This number displays the percentage of datapoints that resulted in a positive diagnosis, when the patient was actually negative. A low hit rate would be preferred here.
+
+In addition, we also calculate the "Detection Rate" - or overall percentage of the total data points that were correctly predicted as positive. (In other words, this is the top left value in the confusion matrix divided by the total number of patients).
+
+
+```{r, echo = FALSE}
+
+#sum(canc_conf_matrix[row(canc_conf_matrix)!= col(canc_conf_matrix)]) #27
+#sum(canc_conf_matrix)
+
+canc_error_rate2 = sum(canc_conf_matrix2[row(canc_conf_matrix2) != col(canc_conf_matrix2)]) / sum(canc_conf_matrix2) #Calculation of hit rate error value. 
+
+paste0("Hit Rate/True Error Rate: ", canc_error_rate2 * 100, "%")
+#16.19%
+
+canc_conf_matrix2[2,2]/sum(canc_conf_matrix2) #59.04%
+
+```
+
+As we can see, the hit rate results in a slightly better 16.19% value, indicating a pretty high percentage of false positives. However, when we consider that the T4 patients were only included in the T1 category because of lack of data, we can observe that our model did improve the diagnosis accuracy rate as compared to the baseline accuracy. Thus we can confirm that our model is probably better than random chance at predicting cancer onset, and could be combined with other models for diagnosis of certain tumors.
+
+```{r, echo=FALSE}
+
+canc_roc2 <- multiclass.roc(tree_2$Tumor, as.numeric(tree_2_fitted_model), plot = TRUE, width = 500, height = 500)
+
+
+tree_2_fitted_prob = predict(tree_2_tree_gini, type= "prob")
+#tree_1_fitted_prob
+
+#roc(tree_1$PR.Status, ifelse(tree_1_fitted_prob[,'not_canc'] >= .75,0,1), plot=TRUE)
+
+```
+
+
+Another useful metric uses an ROC (receiver operating curve) which plots the sensitivity versus specificity at varying cutoff thresholds (the probabilistic threshold the model uses to classify a case as positive). An AUC (area under curve) value is calculated based on the ROC, and the value for this model is 0.7309 which is a fair rating as we want the value to be >0.8.
+
+
