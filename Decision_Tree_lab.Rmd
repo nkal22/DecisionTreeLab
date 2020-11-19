@@ -1,0 +1,637 @@
+---
+title: "Decision Trees - Breast Cancer and Tumor Classification"
+author: "Alden Summerville"
+date: "November 15, 2020"
+output: 
+   prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+    toc: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(rio)
+library(tidyverse)
+library(rpart)
+library(psych)
+library(pROC)
+library(rpart.plot)
+library(rattle)
+library(tidyverse)
+library(caret)
+library(kableExtra)
+library(DT)
+
+```
+
+## **Objective**
+
+The included dataset (clinical_data_breast_cancer_modified.csv) has information on 105 patients across 16 variables, your goal is to build two classifiers one for PR.Status (progesterone receptor), a biomarker that routinely leads to a cancer diagnosis, indicating if there was a positive or negative outcome and one for the Tumor multi-class variable. You would like to be able to explain the model to non-experts but need a fairly robust and flexible approach so you've chosen to use decision trees to get started and will possibly move to an ensemble model if needed. 
+
+## **Breast Cancer Diagnosis Classifier**
+
+To attempt to predict a cancer diagnoses, we can use a biomarker--the progesterone receptor--that routinely leads to a cancer diagnosis (being progesterone positive tends to lead to the diagnosis, so that is our positive case). Our plan of action is to use a decision tree model to assess which variables in the dataset are most important in leading to progesterone positive or negative, and ultimately be able to take in other data to classify if a patient is PR (progesterone receptor) positive or negative.
+
+```{r, include=FALSE}
+#1 Load the data and ensure the column names don't have spaces, hint check.names. 
+
+clinical.data <- read_csv("clinical_breast_cleaned.csv")
+#colnames(clinical.data)
+clinical.data <- clinical.data %>%
+  select(-ER.Status)
+#view(clinical.data)
+
+```
+
+```{r, include=FALSE}
+#2 Ensure all the variables are classified correctly and ensure the target variable for "PR.Status" is 0 for negative and 1 for positive
+
+str(clinical.data)
+
+```
+
+```{r, include=FALSE}
+#3 Don't check for correlated variables....because it doesn't matter with Decision Trees...that was easy
+
+#4 You also don't need to complete a test train split because the rpart defaults to 10 fold cross-validation to train the model...you're welcome. (You can certainly build trees with a test and train)
+
+#5 Guess what, you also don't need to standardize the data, because DTs don't give a ish, they make local decisions...keeps getting easier 
+
+```
+
+### Base Rate
+
+To begin, the base rate in the data for being PR positive is 51.42%. This basically means that roughly half the data for the PR variable is PR positive (balanced set) and there's a 51% chance of classifying PR positive if guessing at random. Now we'll build our initial attempt at a decision tree.
+
+```{r, echo=FALSE}
+#6 Ok now determine the base rate for the classifier, what does this number mean.  For the multi-class this will be the individual percentages for each class. 
+
+base.PR = sum(clinical.data$PR.Status)/length(clinical.data$PR.Status)
+#base.PR
+
+# base rate = 51.42%
+
+#Also want to add data labels to the target
+clinical.data$PR.Status <- factor(clinical.data$PR.Status,labels = c("PR_no", "PR_yes"))
+
+#*use datatable
+#table(clinical.select$PR.Status)
+pr.table <- matrix(table(clinical.data$PR.Status), ncol=2, nrow=1)
+colnames(pr.table) <- c('PR negative', 'PR positive')
+rownames(pr.table) <- 'Frequency'
+datatable(pr.table)
+
+```
+
+### Building the Model
+
+Below is the output of the model as well as a CP (complexity parameter) plot to help us gauge the optimal number of splits for our tree. We can also view the variable importance to assess which variables the tree computed to be "most important" in terms of where to split. Then, using the CP tables and plot we can determine the optimal CP level and number of splits.
+
+#### Model Output
+
+```{r, echo=FALSE}
+#7 Build your model using the default settings
+
+#Build the model
+# Train the tree with the rpart() function.
+# We'll need to set the seed to make the results reproducible. 
+set.seed(1980)
+clinical.gini = rpart(PR.Status~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = clinical.data,#<- data used
+                            control = rpart.control(cp=.01))
+
+#Look at the results
+clinical.gini
+
+```
+
+#### Variable Importance
+
+```{r, echo=FALSE}
+
+#View(clinical.gini$frame)
+
+#8 View the results, what is the most important variable for the tree? 
+clinical.gini$variable.importance
+#our first tree has 6 leaves uses 5 of the variables to make the splits.
+#Variable importance is as follows: AJCC Stage, Converted Stage, Days to date of last contact, Age at initial pathologic diagnosis, OS time, Survival data form, Node Coded, Tumor, Final Status, Gender, Metastasis, and Metastasis coded. 
+
+```
+
+#### Tree
+
+```{r, echo=FALSE}
+
+#9 Plot the tree using the rpart.plot package
+
+#might have to link to a png
+rpart.plot(clinical.gini, type =4, extra = 101)#package rpart.plot
+#export this to  pdf for better viewing
+#dev.off()
+
+# dev - the deviance or the total sum of squares within the node, so if
+#       you divide this by the sample size in each node you get the variance
+# yval - average value of the trait at the node (for categorical values identifies the group)  
+# complexity - the value of the parameter used to make the split (gini or information gain)
+# ncompete - number of competing variables that can be considered for this split
+# nsurrogate - number of surrogate trees (used when there is missing data in the test data set, to mimic the effects of splits in the training data set)
+# yval2 - average value of the trait at the node (for categorical values identifies the group), although it can mean different things when the rpart function is used for regression trees or other analyses 
+
+
+# The "cptable" element includes the optimal prunnings based on the complexity parameter.
+
+#View(clinical.gini$cptable)
+
+```
+
+#### CP Plot
+
+```{r, echo=FALSE}
+#10 plot and convert the cp table to a data.frame
+
+plotcp(clinical.gini)
+
+# Here's a summary:
+# CP - complexity parameter, or the value of the splitting criterion (gini or information gain)
+# nsplit - number of splits
+# rel error - the relative error rate for predictions for the data that generated the tree
+# xerror - cross-validated error, default cross-validation setting uses 10 folds
+# xstd - the standard derivation of cross-validated errors
+
+# NOTE: 
+# For pruning a tree, the rule of thumb is to choose the split at the lowest level 
+# where the rel_error + xstd < xerror
+
+cptable_ex.pr <- as.data.frame(clinical.gini$cptable, )
+#str(cptable_ex.pr)
+
+#11 Add together the real error and standard error to create a new column and determine the optimal number of splits.
+
+cptable_ex.pr$opt <- cptable_ex.pr$`rel error`+ cptable_ex.pr$xstd
+
+#View(cptable_ex.pr)
+
+#* create a datatable for cptable_ex.pr
+
+#Well, for each number of splits the relative error + the standard error is less than the cross-validated error and there's a generally high error rate, therefore, we can gauge that our initial attempt at a tree (with no pruning) is a poor model for the data. However, if we want to determine an optimal split, based on the cp table plot the optimal split is 5. 
+
+```
+
+To determine the number of splits, one method is to find the lowest level at which the relative error + standard error is < cross-validated error, however, that is true for every split. Therefore, we can result to choosing the CP level and numebr of splits by looking at the CP plot and choosing the lowest level at which the relative error is below the error threshold (around 1.09 in this case)--this results in a CP of 0.034 and 5 splits for the tree. Next we can use the R predict function to output a confusion matrix for our model.
+
+### Predictions and Confusion Matrix
+
+```{r, include=FALSE}
+#12 Use the predict function and your model to predict the target variable. 
+
+clinical.predict = predict(clinical.gini, type= "class")
+
+#View(as.data.frame(clinical.predict))
+
+clinical.predict <- as.numeric(clinical.predict)
+#View(clinical.predict) #2 = positive case (PR_yes)
+
+#13 Compare the predicted values to those of the actual by generating a matrix ("by-hand").
+
+clinical.cm = table(clinical.predict, clinical.data$PR.Status)
+#clinical.cm
+
+
+```
+
+```{r, include=FALSE}
+#14 Generate, "by-hand", the hit rate and detection rate and compare the detection rate to your original baseline rate. How did your model work?
+
+sum(clinical.cm[row(clinical.cm)!= col(clinical.cm)])/sum(clinical.cm)
+#hit rate/true error rate = 25.71%
+
+#detection rate/prevalence:
+clinical.cm[2,2]/sum(clinical.cm)
+#35.24%
+
+#Compared to a baseline rate of 51.42%, our model is pretty terrible.
+
+
+```
+
+Before assessing the confusion matrix we can calculate the hit rate/true error rate and the detection rate/prevalence. The hit rate for our first model is 25.71% which is very high, telling us the model has a high error rate. The detection rate is 35.24% which compared to our baseline of 51.42%, tells us the model is performing rather terribly. Let's dig into the confusion matrix to get a deeper perspective and see where the errors are occurring.
+
+```{r, echo=FALSE}
+#15 Use the the confusion matrix function to check a variety of metrics and comment on the metric that might be best for this type of analysis.  
+
+clin.act.fact = clinical.data$PR.Status
+#view(clin.act.fact)
+#str(clin.act.fact)
+clin.act.df <- as.data.frame(clin.act.fact)
+#view(clin.act.df)
+
+clin.act.df$clin.act.fact <- recode(clin.act.df$clin.act.fact, "PR_no" = 1 , "PR_yes" = 2)
+#view(clin.act.df)
+clin.act.fact <- as.factor(clin.act.df$clin.act.fact)
+#str(clin.act.fact)
+
+confusionMatrix(as.factor(clinical.predict), clin.act.fact, positive = "2", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+
+```
+
+Confusion Matrix Outputs:
+
+- Base rate = 51.43%
+
+- Accuracy = 74.29%
+
+- Kappa = 0.4872
+
+- Sensitivity = 68.52%
+
+- Specificity = 80.39%
+
+- Balanced Accuracy = 74.46%
+
+For a classifier of this nature (detecting cancer), we want an extremely low false negative rate meaning a high sensitivity (true positive rate). While there is a fair accuracy and sensitivity meaning the tree is okay at predicting positive outcomes, the false negative rate is 31.48% which is way too high for this case. The model also has a high positive prediction value (precision) of 78.72% which again tells us the model is pretty good at classifying if a patient has cancer. We also don't care as much about the false positive rate (1-specificity), because it's better to err on the side of classifying the positive case (cancer is present) than to miss it if cancer is actually present (better to be safe than sorry). We can also look at the ROC curves to get even more information regarding the quality of our initial model.
+
+### ROC Curve
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+#16 Generate a ROC and AUC output, interpret the results
+
+clin.roc <- roc(clinical.data$PR.Status, as.numeric(clinical.predict), plot = TRUE) #Building the evaluation ROC and AUV using the predicted and original target variables 
+
+# clin.roc
+# 
+# plot(clin.roc)
+
+clin.pred.prob = predict(clinical.gini, type= "prob")
+#View(clin.pred.prob)
+
+clin.auc <- auc(clin.roc)
+#auc = 0.7446
+#The AUC is high due to a low false positive rate (find value from cm)
+
+```
+
+Our ROC curve is somewhat balanced and outputs an AUC (area under curve) of 0.7446 which is fair. This fair rating is probably due to a low false positive rate (high specificity). We can also change our probability threshold to try and optimize our ROC curve based on the metrics we want to improve. 
+
+We want to choose a threshold that gives us the highest sensitivity (it's okay to sacrifice the specificity because the false positive rate isn't of large concern in relation to the sensitivity). Changing the threshold to 0.54 induces an increase in the sensitivity, while reducing the AUC to 0.7309 which isn't too bad. Below is the output:
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+#17 Use the predict function to generate percentages, then select several different threshold levels using the confusion matrix function and interpret the results? What metric should we be trying to optimize. 
+
+#want the highest sensitivity as possible
+clin.roc.t <- roc(clinical.data$PR.Status, ifelse(clin.pred.prob[,'PR_no'] >= .54,0,1), plot=TRUE)
+
+#auc(clin.tresh)
+
+```
+
+### New Models
+
+Now, based on our assessment and optimal CP value, we can create a new tree.
+
+#### Model Output
+
+```{r, echo=FALSE}
+#18 Use your optimal cp (from step 11) (assuming it's different) and rerun the model, how does this impact the quality of the model. 
+
+#optimal cp = 0.034
+set.seed(1980)
+clinical.gini.opt = rpart(PR.Status~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = clinical.data,#<- data used
+                            control = rpart.control(cp=.034))
+
+clinical.gini.opt
+
+```
+
+#### Variable Importance
+
+```{r, echo=FALSE}
+
+clinical.gini.opt$variable.importance
+
+```
+
+#### Tree
+
+```{r, echo=FALSE}
+#might have to link to a png
+rpart.plot(clinical.gini.opt, type =4, extra = 101)
+
+```
+
+#### CP Plot
+
+```{r, echo=FALSE}
+
+plotcp(clinical.gini.opt)
+
+```
+
+#### Confusion Matrix
+
+```{r, echo=FALSE}
+
+clinical.predict.opt = predict(clinical.gini.opt, type= "class")
+clinical.predict.opt <- as.numeric(clinical.predict.opt)
+#View(clinical.predict) #2 = positive case (PR_yes)
+confusionMatrix(as.factor(clinical.predict.opt), clin.act.fact, positive = "2", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+
+```
+
+As we can see, the new tree only has 5 leaves opposed to the 6 on the original tree. We can dig into the metrics of our new tree by assessing the confusion matrix:
+
+"Optimal 1" Confusion Matrix Outputs:
+
+- Accuracy = 73.33% (74.29%)-(initial tree outputs)
+
+- Kappa = 0.4639  (0.4872)
+
+- Sensitivity = 81.48% (68.52%)
+
+- Specificity = 64.71% (80.39%)
+
+- Balanced Accuracy = 73.09% (74.46%)
+
+As desired, our sensitivity increased greatly to 81.48% which is good but still not excellent. Aside from the specificity, which drops a fair amount, the other metrics are minimally affected. While this model is "good" and could theoretically be used in practice, I would only recommend the model to be used as a supplement to a doctors expertise. While the sensitivity of the model is good, there is still a false negative rate (i.e. cancer goes undetected) of 18.52% which is too high for a model supposed to detect cancer.
+
+### Hyperparameter Tuning
+
+#### Model Output
+
+```{r, echo=FALSE}
+#19 Try adjusting several other hyperparameters via rpart.control and review the model evaluation metrics. 
+
+set.seed(1980)
+clinical.gini.opt2 = rpart(PR.Status~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = clinical.data,#<- data used
+                            control = rpart.control(cp=.034, minbucket = 5, maxdepth = 4))
+
+clinical.gini.opt2
+
+```
+
+#### Variable Importance
+
+```{r, echo=FALSE}
+
+clinical.gini.opt2$variable.importance
+
+```
+
+#### Tree
+
+```{r, echo=FALSE}
+#might have to link to a png
+rpart.plot(clinical.gini.opt2, type =4, extra = 101)
+
+```
+
+#### CP Plot
+
+```{r, echo=FALSE}
+plotcp(clinical.gini.opt2)
+
+```
+
+#### Confusion Matrix
+
+```{r, echo=FALSE}
+clinical.predict.opt2 = predict(clinical.gini.opt2, type= "class")
+clinical.predict.opt2 <- as.numeric(clinical.predict.opt2)
+#View(clinical.predict) #2 = positive case (PR_yes)
+confusionMatrix(as.factor(clinical.predict.opt2), clin.act.fact, positive = "2", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+
+```
+
+By adjusting some other hyperparameters (I set the cp to 0.034 again, minbucket = 5, and maxdepth = 4), another optimal tree is produced. The confusion matrix output is as follows:
+
+- Accuracy = 75.24% (73.33%)-("optimal 1" tree outputs)
+
+- Kappa = 0.5005  (0.4639)
+
+- Sensitivity = 88.89% (81.48%)
+
+- Specificity = 60.78% (64.71%)
+
+- Balanced Accuracy = 74.84% (73.09%)
+
+These metrics are great in terms of our model goals. The sensitivity is even higher, now at a value of 88.89% which is great--this signifies a false negative rate of ~11%. While the specificity is even lower 60.78%, that is okay in this case. While the model performs well with this current set of data, it will definitely be sensitive to any changes and the model may be overfitting considering a small dataset. I would recommend some deeper evaluation, possible utilizing a random forest to create a more robust model especially for an application in cancer detection.
+
+## **Tumor Classifier**
+
+By using the same dataset we can create another tree with the goal to classify the type of tumor a patient has (T1, T2, T3, T4). We'll follow the same framework as the first model.
+
+### Base Rates
+
+The base rates for the four classes are as follows:
+
+- T1 = 14.29%
+
+- T2 = 61.90%
+
+- T3 = 18.10%
+
+- T4 = 5.71%
+
+```{r, include=FALSE}
+#20 Follow the same steps for the multi-class target, tumor, aside from step 1, 2 and 14. For step 15 compare to the four base rates and see how you did.
+
+#base rates
+
+base.t1 <- sum(clinical.data$Tumor == "T1")/length(clinical.data$Tumor)
+#14.29%
+base.t2 <- sum(clinical.data$Tumor == "T2")/length(clinical.data$Tumor)
+#61.90%
+base.t3 <- sum(clinical.data$Tumor == "T3")/length(clinical.data$Tumor)
+#18.10%
+base.t4 <- sum(clinical.data$Tumor == "T4")/length(clinical.data$Tumor)
+#5.71%
+
+#labels
+clinical.data$Tumor <- factor(clinical.data$Tumor,labels = c("T1", "T2", "T3", "T4"))
+
+```
+
+### Building the Model
+
+We'll build a multi-class tree model using similar steps as above. The output of the model is as follows:
+
+#### Model Output
+
+```{r, echo=FALSE}
+
+#build model
+set.seed(1980)
+tumor.gini = rpart(Tumor~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = clinical.data,#<- data used
+                            control = rpart.control(cp=.01))
+
+tumor.gini
+
+```
+
+#### Variable Importance
+
+```{r, echo=FALSE}
+
+tumor.gini$variable.importance
+
+```
+
+#### Tree
+
+```{r, echo=FALSE}
+#might have to link png
+rpart.plot(tumor.gini, type =4, extra = 101)
+
+```
+
+#### CP Plot
+
+```{r, echo=FALSE}
+plotcp(tumor.gini)
+
+cptable_ex.tumor <- as.data.frame(tumor.gini$cptable, )
+#str(cptable_ex.pr)
+
+#Add together the real error and standard error to create a new column and determine the optimal number of splits.
+cptable_ex.tumor$opt <- cptable_ex.tumor$`rel error`+ cptable_ex.tumor$xstd
+
+#View(cptable_ex.pr)
+
+#Optimal split at 2 or a cp of 0.16
+
+```
+
+After running the model, we see a tree is outputted with 6 leaves and also that it leaves out the T4 class--this makes sense as the T4 class only has 6 cases in the dataset. We can also view the CP plot to find the optimal number of splits. Our optimal level is a CP of 0.16 which correlates to 2 splits, which is kind of a red flag considering a tree of only 2 splits is extremely broad. Let's look at the confusion matrix to get a better picture.
+
+### Confusion Matrix
+
+```{r, echo=FALSE}
+
+#predict
+tumor.predict = predict(tumor.gini, type= "class")
+
+#conf matrix
+confusionMatrix(as.factor(tumor.predict), as.factor(clinical.data$Tumor), positive = "T1", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+
+```
+
+Our overall accuracy is 83.81% which is fair but is a huge generalization in terms of a four-class tree. A good comparison metric is the base rate or prevalence of each class. The T2 class, for example, has the highest base rate (61.9%) and thus has the highest sensitivity (95%), while the T1 and T3 classes (base rates around 16%) have lower sensitivities however high specificities because the model is excellent at predicting when a tumor is not T1 or T3. To dig deeper we'll look at the ROC curves.
+
+### ROC Curves
+
+The output for the ROC curves is as follows (in order starting with T1):
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+#roc and auc
+tumor.roc = multiclass.roc(clinical.data$Tumor, as.numeric(tumor.predict), plot=TRUE)
+
+#auc(tumor.roc)
+#auc = 0.8299
+
+```
+
+As we can see, the ROC curves are very skewed (some appear as "perfect models" which is not the case) and tell us our model is probably overfitting in some cases. We can try and change the probability threshold to output better ROC curves:
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+#changing threshold
+tumor.pred.prob <- predict(tumor.gini, type="prob")
+
+#multiclass.roc(clinical.data$Tumor, ifelse(tumor.pred.prob[,'T1'] >= .62,0,1), plot=TRUE)
+tum.roc.t = multiclass.roc(clinical.data$Tumor, ifelse(tumor.pred.prob[,'T2'] >= .2,0,1), plot=TRUE)
+#multiclass.roc(clinical.data$Tumor, ifelse(tumor.pred.prob[,'T3'] >= .5,0,1), plot=TRUE)
+#multiclass.roc(clinical.data$Tumor, ifelse(tumor.pred.prob[,'T4'] >= .5,0,1), plot=TRUE)
+
+
+```
+
+T1: Threshold >0.62 gives an ROC with a slope of 1 (AUC = 0.5) and a threshold <0.62 gives an ROC in the form of a right angle (AUC = 0.75 -- "perfect" model), therefore, the ROC curve for T1 isn't quite computing correctly and is not of use. 
+
+T2: Threshold of 0.2 increases the specificity and gives an AUC of 0.7622.
+
+T3: Threshold of 0.5 gives the optimal ROC curve with an AUC of 0.7122.
+
+T4: Because T4 is not used in the tree, the ROC curve is not of concern and changing the threshold results in no change.
+
+### Optimal Model #1
+
+#### Tree:
+
+```{r, echo=FALSE}
+
+#model using optimal cp
+set.seed(1980)
+tumor.gini.opt = rpart(Tumor~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = clinical.data,#<- data used
+                            control = rpart.control(cp=.16))
+
+rpart.plot(tumor.gini.opt, type =4, extra = 101)
+
+```
+
+#### Confusion Matrix
+
+```{r, echo=FALSE}
+
+tumor.predict.opt = predict(tumor.gini.opt, type= "class")
+
+#conf matrix
+confusionMatrix(as.factor(tumor.predict.opt), as.factor(clinical.data$Tumor), positive = "T1", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+
+```
+
+Using the optimal cp actually ended up lowering the overall accuracy and it appears the tree is too un-complex (only 1 split so T3 and T4 are unused) as the sensitivity for T2 is 100%. Let's try adjusting some hyperparameters to produce a more accurate tree.
+
+### Hyperparameter Tuning
+
+#### Tree
+
+```{r, echo=FALSE}
+
+#hyperparameters
+set.seed(1980)
+tumor.gini.opt2 = rpart(Tumor~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = clinical.data,#<- data used
+                            control = rpart.control(cp=.01, minbucket = 2, maxdepth = 3))
+
+rpart.plot(tumor.gini.opt2, type =4, extra = 101)
+
+```
+
+#### Confusion Matrix
+
+```{r, echo=FALSE}
+
+tumor.predict.opt2 = predict(tumor.gini.opt2, type= "class")
+
+#conf matrix
+confusionMatrix(as.factor(tumor.predict.opt2), as.factor(clinical.data$Tumor), positive = "T1", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+
+```
+
+By using rpart.control and setting the cp to 0.01 (basic), the minbucket to 2, and the maxdepth to the 3, a new tree is made that may be the optimal tree in this case. The max depth is set to 3 to avoid overfitting and the minbucket is set to take every case (T1,2,3,4) into account. The overall accuracy is 84.76% which is good (1% better than our original tree), and the sensitivities for each class are fair. The specificities for each class are a little high (100% for T1 and T4) which could mean our tree is still overfitting even though it only has 4 splits--the issue of overfitting is especially concerning considering the dataset used only has 105 observations, and then we're trying to classify 4 different tumors within the 105 observations. For example, the base rate of the T4 is only 5.71% and there are only 6 observations in the dataset for T4--because of this, it would be easy for the tree to "memorize" that data. Therefore, I would not recommend this model to be used in practice (maybe only for detecting T2 tumors as this dataset is rich with those observations), unless a more robust dataset is trained.
